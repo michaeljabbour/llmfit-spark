@@ -103,6 +103,25 @@ enum Commands {
         json: bool,
     },
 
+    /// Benchmark inference speed (TPS, TTFT, latency)
+    Bench {
+        /// Model name or partial match (auto-detects if omitted)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Provider: ollama, vllm, mlx, or auto
+        #[arg(long, default_value = "auto")]
+        provider: String,
+
+        /// Number of benchmark runs
+        #[arg(long, default_value = "3")]
+        runs: usize,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Manage DGX Spark cluster configuration
     Cluster {
         #[command(subcommand)]
@@ -325,6 +344,113 @@ fn run_recommend(
     }
 }
 
+fn run_bench(model: Option<String>, provider: String, runs: usize, json: bool) {
+    use llmfit_core::bench;
+
+    let target = match provider.to_lowercase().as_str() {
+        "ollama" => {
+            let url = std::env::var("OLLAMA_HOST")
+                .unwrap_or_else(|_| "http://localhost:11434".to_string());
+            let model_name = model.unwrap_or_else(|| {
+                eprintln!("Error: --model required for ollama provider");
+                std::process::exit(1);
+            });
+            bench::BenchTarget::Ollama { url, model: model_name }
+        }
+        "vllm" => {
+            let url = if let Some(cluster) = ClusterSpecs::load() {
+                format!("http://{}:8000", cluster.head_ip)
+            } else {
+                "http://localhost:8000".to_string()
+            };
+            match bench::auto_detect_target(model.as_deref()) {
+                Ok(bench::BenchTarget::VLlm { model: m, .. }) => {
+                    bench::BenchTarget::VLlm { url, model: m }
+                }
+                _ => {
+                    let model_name = model.unwrap_or_else(|| {
+                        eprintln!("Error: could not detect model from vLLM. Use --model");
+                        std::process::exit(1);
+                    });
+                    bench::BenchTarget::VLlm { url, model: model_name }
+                }
+            }
+        }
+        "mlx" => {
+            let url = std::env::var("MLX_LM_HOST")
+                .unwrap_or_else(|_| "http://localhost:8080".to_string());
+            let model_name = model.unwrap_or_else(|| {
+                eprintln!("Error: --model required for mlx provider");
+                std::process::exit(1);
+            });
+            bench::BenchTarget::Mlx { url, model: model_name }
+        }
+        "auto" | _ => {
+            match bench::auto_detect_target(model.as_deref()) {
+                Ok(target) => target,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+    };
+
+    // Show what we're benchmarking
+    let (provider_name, url, model_name) = match &target {
+        bench::BenchTarget::Ollama { url, model } => ("Ollama", url.as_str(), model.as_str()),
+        bench::BenchTarget::VLlm { url, model } => ("vLLM", url.as_str(), model.as_str()),
+        bench::BenchTarget::Mlx { url, model } => ("MLX", url.as_str(), model.as_str()),
+    };
+
+    if !json {
+        println!();
+        println!("  Benchmarking {} via {} ({})", model_name, provider_name, url);
+        println!("  {} run(s) with warmup...", runs);
+        println!();
+    }
+
+    let progress = |i: usize, total: usize| {
+        if !json {
+            if i == 0 {
+                eprint!("  Warming up...");
+            } else {
+                eprint!("\r  Run {}/{}...", i, total);
+            }
+        }
+    };
+
+    let result = match target {
+        bench::BenchTarget::Ollama { ref url, ref model } => {
+            bench::bench_ollama(url, model, runs, &progress)
+        }
+        bench::BenchTarget::VLlm { ref url, ref model } => {
+            bench::bench_openai_compat(url, model, "vllm", runs, &progress)
+        }
+        bench::BenchTarget::Mlx { ref url, ref model } => {
+            bench::bench_openai_compat(url, model, "mlx", runs, &progress)
+        }
+    };
+
+    if !json {
+        eprintln!(); // clear progress line
+    }
+
+    match result {
+        Ok(result) => {
+            if json {
+                result.display_json();
+            } else {
+                result.display();
+            }
+        }
+        Err(e) => {
+            eprintln!("Benchmark failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -406,6 +532,15 @@ fn main() {
                     cli.cluster,
                     cli.no_cluster,
                 );
+            }
+
+            Commands::Bench {
+                model,
+                provider,
+                runs,
+                json,
+            } => {
+                run_bench(model, provider, runs, json || cli.json);
             }
 
             Commands::Cluster { action } => {
