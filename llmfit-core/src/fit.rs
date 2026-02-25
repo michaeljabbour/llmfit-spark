@@ -155,28 +155,76 @@ impl ModelFit {
         // Step 2: score memory fit purely on headroom in that path's memory pool
         let (run_mode, mem_required, mem_available) = if system.cluster_mode {
             // Cluster mode: vLLM with tensor parallelism across multiple nodes.
-            // Total VRAM is the sum across all nodes (NCCL handles distribution).
             let pool = system.total_gpu_vram_gb.unwrap_or(0.0);
-            let tp_size = system.cluster_node_count;
-            if let Some((_, best_mem)) = choose_quant(pool) {
-                notes.push(format!(
-                    "Cluster: tensor-parallel across {} nodes via vLLM (TP={})",
-                    tp_size, tp_size
-                ));
-                if tp_size > 1 {
+            let node_count = system.cluster_node_count;
+            let per_gpu = if node_count > 0 { pool / node_count as f64 } else { pool };
+
+            // Check TP compatibility: attention heads must be divisible by TP degree
+            let valid_tp = model.valid_tp_sizes();
+            let best_tp = valid_tp.iter().rev()
+                .find(|&&tp| tp <= node_count)
+                .copied()
+                .unwrap_or(1);
+
+            // Determine effective memory pool for the chosen TP
+            let effective_pool = per_gpu * best_tp as f64;
+
+            if let Some((_, best_mem)) = choose_quant(effective_pool) {
+                if best_tp == node_count {
                     notes.push(format!(
-                        "Model sharded across {} GPUs ({:.0} GB each, {:.0} GB total)",
-                        tp_size,
-                        pool / tp_size as f64,
-                        pool
+                        "Cluster: TP={} across all {} nodes via vLLM",
+                        best_tp, node_count
+                    ));
+                } else if best_tp > 1 {
+                    notes.push(format!(
+                        "Cluster: TP={} (of {} nodes) — heads not divisible by {}",
+                        best_tp, node_count, node_count
+                    ));
+                    let remaining = node_count - best_tp;
+                    notes.push(format!(
+                        "{} GPU(s) free for other models or PP fallback",
+                        remaining
+                    ));
+                } else {
+                    notes.push(format!(
+                        "Cluster: single GPU (TP=1) — heads not divisible by {} or {}",
+                        node_count, if node_count > 2 { node_count - 1 } else { 2 }
                     ));
                 }
-                (RunMode::TensorParallel, best_mem, pool)
+
+                notes.push(format!(
+                    "Model on {} GPU(s) ({:.0} GB each, {:.0} GB effective)",
+                    best_tp, per_gpu, effective_pool
+                ));
+
+                // Show TP compatibility info
+                let tp_list: Vec<String> = valid_tp.iter()
+                    .filter(|&&tp| tp <= 8)
+                    .map(|tp| tp.to_string())
+                    .collect();
+                notes.push(format!("Valid TP sizes: {}", tp_list.join(", ")));
+
+                // If model doesn't support full cluster TP, suggest PP
+                if best_tp < node_count && best_mem > effective_pool * 0.8 {
+                    notes.push(format!(
+                        "Consider PP={} (pipeline parallel) to use all {} GPUs",
+                        node_count, node_count
+                    ));
+                }
+
+                (RunMode::TensorParallel, best_mem, effective_pool)
             } else {
                 notes.push(format!(
                     "Cluster: {} nodes ({:.0} GB total) — model too large",
-                    tp_size, pool
+                    node_count, pool
                 ));
+                if best_tp < node_count {
+                    notes.push(format!(
+                        "TP={} max (heads not divisible by {}). Valid: {}",
+                        best_tp, node_count,
+                        valid_tp.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", ")
+                    ));
+                }
                 (RunMode::TensorParallel, default_mem_required, pool)
             }
         } else if system.has_gpu {

@@ -61,6 +61,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Availability filter
         KeyCode::Char('a') => app.cycle_availability_filter(),
 
+        // Use case filter
+        KeyCode::Char('u') => app.cycle_use_case_filter(),
+
         // Sort column
         KeyCode::Char('s') => app.cycle_sort_column(),
 

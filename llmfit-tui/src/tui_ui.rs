@@ -250,14 +250,15 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Min(30),    // search
-            Constraint::Length(18), // provider summary
-            Constraint::Length(18), // use-case summary
-            Constraint::Length(16), // capability summary
-            Constraint::Length(18), // sort column
-            Constraint::Length(20), // fit filter
-            Constraint::Length(20), // availability filter
-            Constraint::Length(16), // theme
+            Constraint::Min(20),    // search
+            Constraint::Length(20), // use case cycle filter [u]
+            Constraint::Length(18), // provider summary [P]
+            Constraint::Length(18), // use-case summary [U]
+            Constraint::Length(16), // capability summary [C]
+            Constraint::Length(18), // sort column [s]
+            Constraint::Length(20), // fit filter [f]
+            Constraint::Length(20), // availability filter [a]
+            Constraint::Length(16), // theme [t]
         ])
         .split(area);
 
@@ -297,6 +298,26 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         ));
     }
 
+    // Use case filter
+    let uc_style = if app.use_case_filter == crate::tui_app::UseCaseFilter::All {
+        Style::default().fg(tc.fg)
+    } else {
+        Style::default().fg(tc.accent)
+    };
+
+    let uc_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(tc.border))
+        .title(" Use [u] ")
+        .title_style(Style::default().fg(tc.muted));
+
+    let uc_text = Paragraph::new(Line::from(Span::styled(
+        format!(" {}", app.use_case_filter.label()),
+        uc_style,
+    )))
+    .block(uc_block);
+    frame.render_widget(uc_text, chunks[1]);
+
     // Provider filter summary
     let active_count = app.selected_providers.iter().filter(|&&s| s).count();
     let total_count = app.providers.len();
@@ -324,7 +345,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(provider_color),
     )))
     .block(provider_block);
-    frame.render_widget(providers, chunks[1]);
+    frame.render_widget(providers, chunks[2]);
 
     // Use-case filter summary
     let active_count = app.selected_use_cases.iter().filter(|&&s| s).count();
@@ -353,7 +374,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(use_case_color),
     )))
     .block(use_case_block);
-    frame.render_widget(use_cases, chunks[2]);
+    frame.render_widget(use_cases, chunks[3]);
 
     // Capability filter summary
     let active_cap_count = app.selected_capabilities.iter().filter(|&&s| s).count();
@@ -382,7 +403,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(cap_color),
     )))
     .block(cap_block);
-    frame.render_widget(caps, chunks[3]);
+    frame.render_widget(caps, chunks[4]);
 
     // Sort column
     let sort_block = Block::default()
@@ -396,7 +417,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(tc.accent),
     )))
     .block(sort_block);
-    frame.render_widget(sort_text, chunks[4]);
+    frame.render_widget(sort_text, chunks[5]);
 
     // Fit filter
     let fit_style = match app.fit_filter {
@@ -416,7 +437,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
 
     let fit_text = Paragraph::new(Line::from(Span::styled(app.fit_filter.label(), fit_style)))
         .block(fit_block);
-    frame.render_widget(fit_text, chunks[5]);
+    frame.render_widget(fit_text, chunks[6]);
 
     // Availability filter
     let avail_style = match app.availability_filter {
@@ -436,7 +457,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         avail_style,
     )))
     .block(avail_block);
-    frame.render_widget(avail_text, chunks[6]);
+    frame.render_widget(avail_text, chunks[7]);
 
     // Theme indicator
     let theme_block = Block::default()
@@ -450,7 +471,7 @@ fn draw_search_and_filters(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeC
         Style::default().fg(tc.info),
     )))
     .block(theme_block);
-    frame.render_widget(theme_text, chunks[7]);
+    frame.render_widget(theme_text, chunks[8]);
 }
 
 fn fit_color(level: FitLevel, tc: &ThemeColors) -> Color {
@@ -1105,7 +1126,31 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 Style::default().fg(tc.muted),
             ),
         ]),
-        Line::from(vec![
+    ];
+
+    // TP compatibility line (shown for all models, useful for cluster planning)
+    {
+        let valid_tp = fit.model.valid_tp_sizes();
+        let tp_str: Vec<String> = valid_tp.iter()
+            .filter(|&&tp| tp <= 8)
+            .map(|tp| tp.to_string())
+            .collect();
+        let tp_color = if app.specs.cluster_mode {
+            let cluster_nodes = app.specs.cluster_node_count;
+            if fit.model.supports_tp(cluster_nodes) { tc.good } else { tc.warning }
+        } else {
+            tc.muted
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  TP compat:   ", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!("TP={}", tp_str.join(",")),
+                Style::default().fg(tp_color),
+            ),
+        ]));
+    }
+
+    lines.push(Line::from(vec![
             Span::styled("  Installed:   ", Style::default().fg(tc.muted)),
             {
                 let ollama_installed =
@@ -1142,8 +1187,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                     Span::styled("- No runtime detected", Style::default().fg(tc.muted))
                 }
             },
-        ]),
-    ];
+        ]));
 
     // Scoring section
     let score_color = if fit.score >= 70.0 {
@@ -1996,7 +2040,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 };
                 (
                     format!(
-                        " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  t:theme  p:plan  m:mark  c:compare  x:clear mark{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
+                        " ↑↓/jk:nav  {}  /:search  u:use  a:avail  f:fit  s:sort  t:theme  p:plan  m:mark  c:compare  x:clear mark{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
                         detail_key, ollama_keys,
                     ),
                     "NORMAL",
@@ -2081,7 +2125,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
             };
             (
                 format!(
-                    " ↑↓/jk:nav  {}  /:search  f:fit  s:sort  t:theme  p:plan  m:mark  c:compare  x:clear mark{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
+                    " ↑↓/jk:nav  {}  /:search  u:use  a:avail  f:fit  s:sort  t:theme  p:plan  m:mark  c:compare  x:clear mark{}  P:providers  U:use cases  C:caps  q:quit  tok/s*:est",
                     detail_key, ollama_keys,
                 ),
                 "NORMAL",
