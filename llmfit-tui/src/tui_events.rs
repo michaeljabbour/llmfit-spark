@@ -52,6 +52,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) {
         // Fit filter
         KeyCode::Char('f') => app.cycle_fit_filter(),
 
+        // Use case filter
+        KeyCode::Char('u') => app.cycle_use_case_filter(),
+
         // Sort column
         KeyCode::Char('s') => app.cycle_sort_column(),
 

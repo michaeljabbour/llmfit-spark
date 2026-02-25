@@ -443,7 +443,7 @@ pub fn interactive_init() -> Result<ClusterSpecs, String> {
     println!();
 
     // Step 1: Get head node IP
-    print!("  Head node IP or hostname [192.168.0.200]: ");
+    print!("  Head node IP or hostname [10.0.0.1]: ");
     stdout.flush().ok();
     let mut head_input = String::new();
     stdin
@@ -452,7 +452,7 @@ pub fn interactive_init() -> Result<ClusterSpecs, String> {
         .map_err(|e| format!("Read error: {}", e))?;
     let head_ip = head_input.trim();
     let head_ip = if head_ip.is_empty() {
-        "192.168.0.200"
+        "10.0.0.1"
     } else {
         head_ip
     };

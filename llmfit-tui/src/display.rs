@@ -324,6 +324,7 @@ fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
         "memory_required_gb": round2(fit.memory_required_gb),
         "memory_available_gb": round2(fit.memory_available_gb),
         "utilization_pct": round1(fit.utilization_pct),
+        "valid_tp_sizes": fit.model.valid_tp_sizes(),
         "notes": fit.notes,
     })
 }
