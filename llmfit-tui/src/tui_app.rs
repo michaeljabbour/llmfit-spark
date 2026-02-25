@@ -76,6 +76,44 @@ impl UseCaseFilter {
     }
 }
 
+/// Filter by tensor parallelism compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TpFilter {
+    All,
+    Tp2,
+    Tp3,
+    Tp4,
+}
+
+impl TpFilter {
+    pub fn label(&self) -> &str {
+        match self {
+            TpFilter::All => "All",
+            TpFilter::Tp2 => "TP=2",
+            TpFilter::Tp3 => "TP=3",
+            TpFilter::Tp4 => "TP=4",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            TpFilter::All => TpFilter::Tp2,
+            TpFilter::Tp2 => TpFilter::Tp3,
+            TpFilter::Tp3 => TpFilter::Tp4,
+            TpFilter::Tp4 => TpFilter::All,
+        }
+    }
+
+    pub fn matches(&self, model: &llmfit_core::models::LlmModel) -> bool {
+        match self {
+            TpFilter::All => true,
+            TpFilter::Tp2 => model.supports_tp(2),
+            TpFilter::Tp3 => model.supports_tp(3),
+            TpFilter::Tp4 => model.supports_tp(4),
+        }
+    }
+}
+
 impl FitFilter {
     pub fn label(&self) -> &str {
         match self {
@@ -116,6 +154,7 @@ pub struct App {
     // Filters
     pub fit_filter: FitFilter,
     pub use_case_filter: UseCaseFilter,
+    pub tp_filter: TpFilter,
     pub installed_first: bool,
     pub sort_column: SortColumn,
 
@@ -211,6 +250,7 @@ impl App {
             selected_providers,
             fit_filter: FitFilter::All,
             use_case_filter: UseCaseFilter::All,
+            tp_filter: TpFilter::All,
             installed_first: false,
             sort_column: SortColumn::Score,
             selected_row: 0,
@@ -279,7 +319,10 @@ impl App {
                 // Use case filter
                 let matches_use_case = self.use_case_filter.matches(fit.use_case);
 
-                matches_search && matches_provider && matches_fit && matches_use_case
+                // TP filter
+                let matches_tp = self.tp_filter.matches(&fit.model);
+
+                matches_search && matches_provider && matches_fit && matches_use_case && matches_tp
             })
             .map(|(i, _)| i)
             .collect();
@@ -347,6 +390,11 @@ impl App {
 
     pub fn cycle_use_case_filter(&mut self) {
         self.use_case_filter = self.use_case_filter.next();
+        self.apply_filters();
+    }
+
+    pub fn cycle_tp_filter(&mut self) {
+        self.tp_filter = self.tp_filter.next();
         self.apply_filters();
     }
 
