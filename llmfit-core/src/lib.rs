@@ -1,3 +1,4 @@
+pub mod bench;
 pub mod cluster;
 pub mod fit;
 pub mod hardware;
@@ -5,6 +6,7 @@ pub mod models;
 pub mod plan;
 pub mod providers;
 
+pub use bench::{BenchResult, BenchTarget};
 pub use cluster::ClusterSpecs;
 pub use fit::{FitLevel, InferenceRuntime, ModelFit, RunMode, ScoreComponents, SortColumn};
 pub use hardware::{GpuBackend, SystemSpecs};
