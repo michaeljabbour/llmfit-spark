@@ -7,7 +7,7 @@ use crate::models::{self, LlmModel, UseCase};
 pub enum InferenceRuntime {
     LlamaCpp, // llama.cpp / Ollama
     Mlx,      // Apple MLX framework
-    Vllm,     // vLLM (for AWQ/GPTQ pre-quantized models)
+    Vllm, // vLLM (AWQ/GPTQ + distributed tensor-parallel inference)
 }
 
 impl InferenceRuntime {
@@ -72,10 +72,11 @@ pub enum FitLevel {
 /// This is the "optimization" dimension, independent of memory fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum RunMode {
-    Gpu,        // Fully loaded into VRAM -- fast
-    MoeOffload, // MoE: active experts in VRAM, inactive offloaded to RAM
-    CpuOffload, // Partial GPU offload, spills to system RAM -- mixed
-    CpuOnly,    // Entirely in system RAM, no GPU -- slow
+    Gpu,             // Fully loaded into VRAM -- fast
+    TensorParallel,  // Distributed across cluster nodes via NCCL -- fast
+    MoeOffload,      // MoE: active experts in VRAM, inactive offloaded to RAM
+    CpuOffload,      // Partial GPU offload, spills to system RAM -- mixed
+    CpuOnly,         // Entirely in system RAM, no GPU -- slow
 }
 
 /// Multi-dimensional score components (0-100 each).
@@ -138,7 +139,9 @@ impl ModelFit {
 
         // Determine inference runtime up front so path selection can use
         // the correct quantization hierarchy.
-        let runtime = if model.is_prequantized() {
+        let runtime = if system.cluster_mode {
+            InferenceRuntime::Vllm
+        } else if model.is_prequantized() {
             InferenceRuntime::Vllm
         } else if system.backend == GpuBackend::Metal && system.unified_memory {
             InferenceRuntime::Mlx
@@ -150,7 +153,33 @@ impl ModelFit {
 
         // Step 1: pick the best available execution path
         // Step 2: score memory fit purely on headroom in that path's memory pool
-        let (run_mode, mem_required, mem_available) = if system.has_gpu {
+        let (run_mode, mem_required, mem_available) = if system.cluster_mode {
+            // Cluster mode: vLLM with tensor parallelism across multiple nodes.
+            // Total VRAM is the sum across all nodes (NCCL handles distribution).
+            let pool = system.total_gpu_vram_gb.unwrap_or(0.0);
+            let tp_size = system.cluster_node_count;
+            if let Some((_, best_mem)) = choose_quant(pool) {
+                notes.push(format!(
+                    "Cluster: tensor-parallel across {} nodes via vLLM (TP={})",
+                    tp_size, tp_size
+                ));
+                if tp_size > 1 {
+                    notes.push(format!(
+                        "Model sharded across {} GPUs ({:.0} GB each, {:.0} GB total)",
+                        tp_size,
+                        pool / tp_size as f64,
+                        pool
+                    ));
+                }
+                (RunMode::TensorParallel, best_mem, pool)
+            } else {
+                notes.push(format!(
+                    "Cluster: {} nodes ({:.0} GB total) — model too large",
+                    tp_size, pool
+                ));
+                (RunMode::TensorParallel, default_mem_required, pool)
+            }
+        } else if system.has_gpu {
             if system.unified_memory {
                 // Unified memory (Apple Silicon or NVIDIA Tegra/Grace Blackwell):
                 // GPU and CPU share the same memory pool.
@@ -364,6 +393,7 @@ impl ModelFit {
     pub fn run_mode_text(&self) -> &str {
         match self.run_mode {
             RunMode::Gpu => "GPU",
+            RunMode::TensorParallel => "TP",
             RunMode::MoeOffload => "MoE",
             RunMode::CpuOffload => "CPU+GPU",
             RunMode::CpuOnly => "CPU",
@@ -386,7 +416,7 @@ fn score_fit(
     }
 
     match run_mode {
-        RunMode::Gpu => {
+        RunMode::Gpu | RunMode::TensorParallel => {
             if recommended <= mem_available {
                 FitLevel::Perfect
             } else if mem_available >= mem_required * 1.2 {
@@ -774,6 +804,8 @@ fn estimate_tps(
         (GpuBackend::Metal, InferenceRuntime::Mlx) => 250.0,
         (GpuBackend::Metal, InferenceRuntime::LlamaCpp) => 160.0,
         (GpuBackend::Metal, InferenceRuntime::Vllm) => 160.0,
+        // vLLM on CUDA cluster: slightly higher throughput due to continuous batching
+        (GpuBackend::Cuda, InferenceRuntime::Vllm) => 240.0,
         (GpuBackend::Cuda, _) => 220.0,
         (GpuBackend::Rocm, _) => 180.0,
         (GpuBackend::Vulkan, _) => 150.0,
@@ -781,6 +813,7 @@ fn estimate_tps(
         (GpuBackend::CpuArm, _) => 90.0,
         (GpuBackend::CpuX86, _) => 70.0,
         (GpuBackend::Ascend, _) => 390.0,
+        (_, InferenceRuntime::Vllm) => 200.0, // vLLM fallback
     };
 
     let mut base = k / params;
@@ -795,10 +828,11 @@ fn estimate_tps(
 
     // Run mode penalties
     match run_mode {
-        RunMode::Gpu => {}                  // full speed
-        RunMode::MoeOffload => base *= 0.8, // expert switching latency
-        RunMode::CpuOffload => base *= 0.5, // significant penalty
-        RunMode::CpuOnly => base *= 0.3,    // worst case—override K to CPU
+        RunMode::Gpu => {}                       // full speed
+        RunMode::TensorParallel => base *= 0.9,  // ~10% overhead for NCCL/QSFP
+        RunMode::MoeOffload => base *= 0.8,      // expert switching latency
+        RunMode::CpuOffload => base *= 0.5,      // significant penalty
+        RunMode::CpuOnly => base *= 0.3,         // worst case—override K to CPU
     }
 
     // CPU-only should use CPU K regardless of detected GPU

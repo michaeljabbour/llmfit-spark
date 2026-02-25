@@ -459,7 +459,7 @@ fn system_json(specs: &SystemSpecs) -> serde_json::Value {
         })
         .collect();
 
-    serde_json::json!({
+    let mut json = serde_json::json!({
         "total_ram_gb": round2(specs.total_ram_gb),
         "available_ram_gb": round2(specs.available_ram_gb),
         "cpu_cores": specs.total_cpu_cores,
@@ -471,7 +471,17 @@ fn system_json(specs: &SystemSpecs) -> serde_json::Value {
         "unified_memory": specs.unified_memory,
         "backend": specs.backend.label(),
         "gpus": gpus_json,
-    })
+    });
+
+    // Add cluster info if in cluster mode
+    if specs.cluster_mode {
+        json["cluster_mode"] = serde_json::json!(true);
+        json["cluster_node_count"] = serde_json::json!(specs.cluster_node_count);
+        json["total_gpu_vram_gb"] = serde_json::json!(specs.total_gpu_vram_gb.map(round2));
+        json["runtime"] = serde_json::json!("vLLM");
+    }
+
+    json
 }
 
 fn fit_to_json(fit: &ModelFit) -> serde_json::Value {
