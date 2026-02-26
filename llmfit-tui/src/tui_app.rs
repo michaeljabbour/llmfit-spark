@@ -93,6 +93,8 @@ pub struct App {
     pub pull_model_name: Option<String>,
     /// Animation frame counter, incremented every tick while pulling.
     pub tick_count: u64,
+    /// When true, the next 'd' press will confirm and start the download.
+    pub confirm_download: bool,
 
     // Theme
     pub theme: Theme,
@@ -176,6 +178,7 @@ impl App {
             pull_percent: None,
             pull_model_name: None,
             tick_count: 0,
+            confirm_download: false,
             theme: Theme::load(),
         };
 
@@ -245,22 +248,26 @@ impl App {
     }
 
     pub fn move_up(&mut self) {
+        self.confirm_download = false;
         if self.selected_row > 0 {
             self.selected_row -= 1;
         }
     }
 
     pub fn move_down(&mut self) {
+        self.confirm_download = false;
         if !self.filtered_fits.is_empty() && self.selected_row < self.filtered_fits.len() - 1 {
             self.selected_row += 1;
         }
     }
 
     pub fn page_up(&mut self) {
+        self.confirm_download = false;
         self.selected_row = self.selected_row.saturating_sub(10);
     }
 
     pub fn page_down(&mut self) {
+        self.confirm_download = false;
         if !self.filtered_fits.is_empty() {
             self.selected_row = (self.selected_row + 10).min(self.filtered_fits.len() - 1);
         }
