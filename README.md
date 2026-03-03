@@ -209,6 +209,16 @@ Supported query params for `models`/`models/top`:
 - `include_too_tight`: include non-runnable rows (default `false` on `/top`, `true` on `/models`)
 - `max_context`: per-request context cap for memory estimation
 
+Validate API behavior locally:
+
+```sh
+# spawn server automatically and run endpoint/schema/filter assertions
+python3 scripts/test_api.py --spawn
+
+# or test an already-running server
+python3 scripts/test_api.py --base-url http://127.0.0.1:8787
+```
+
 ### GPU memory override
 
 GPU VRAM autodetection can fail on some systems (e.g. broken `nvidia-smi`, VMs, passthrough setups). Use `--memory` to manually specify your GPU's VRAM:

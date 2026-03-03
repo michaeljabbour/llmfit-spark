@@ -7,7 +7,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use llmfit_core::fit::{
-    FitLevel, InferenceRuntime, ModelFit, SortColumn, backend_compatible, rank_models_by_fit_opts_col,
+    FitLevel, InferenceRuntime, ModelFit, SortColumn, backend_compatible,
+    rank_models_by_fit_opts_col,
 };
 use llmfit_core::hardware::{GpuBackend, SystemSpecs};
 use llmfit_core::models::{LlmModel, ModelDatabase, UseCase};
@@ -277,8 +278,7 @@ fn filtered_fits(
         .map(|m| ModelFit::analyze_with_context_limit(m, &state.specs, context_limit))
         .collect();
 
-    let is_apple_silicon =
-        state.specs.backend == GpuBackend::Metal && state.specs.unified_memory;
+    let is_apple_silicon = state.specs.backend == GpuBackend::Metal && state.specs.unified_memory;
     if !is_apple_silicon {
         fits.retain(|f| !f.model.is_mlx_only());
     }
@@ -293,7 +293,10 @@ fn filtered_fits(
         fits.retain(|f| {
             f.model.name.to_lowercase().contains(&search_lower)
                 || f.model.provider.to_lowercase().contains(&search_lower)
-                || f.model.parameter_count.to_lowercase().contains(&search_lower)
+                || f.model
+                    .parameter_count
+                    .to_lowercase()
+                    .contains(&search_lower)
                 || f.model.use_case.to_lowercase().contains(&search_lower)
                 || f.use_case.label().to_lowercase().contains(&search_lower)
         });
