@@ -10,11 +10,12 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
       in
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "llmfit";
-          version = "0.6.3";
+          inherit version;
 
           src = ./.;
 
