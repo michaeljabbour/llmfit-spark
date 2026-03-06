@@ -1,6 +1,6 @@
 use llmfit_core::fit::{FitLevel, ModelFit, SortColumn};
 use llmfit_core::hardware::SystemSpecs;
-use llmfit_core::models::ModelDatabase;
+use llmfit_core::models::{ModelDatabase, UseCase};
 use llmfit_core::providers::{
     self, MlxProvider, ModelProvider, OllamaProvider, PullEvent, PullHandle,
 };
@@ -25,6 +25,93 @@ pub enum FitFilter {
     Marginal,
     TooTight,
     Runnable, // Perfect + Good + Marginal (excludes TooTight)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseCaseFilter {
+    All,
+    General,
+    Coding,
+    Reasoning,
+    Chat,
+    Multimodal,
+    Embedding,
+}
+
+impl UseCaseFilter {
+    pub fn label(&self) -> &str {
+        match self {
+            UseCaseFilter::All => "All",
+            UseCaseFilter::General => "General",
+            UseCaseFilter::Coding => "Coding",
+            UseCaseFilter::Reasoning => "Reasoning",
+            UseCaseFilter::Chat => "Chat",
+            UseCaseFilter::Multimodal => "Multi",
+            UseCaseFilter::Embedding => "Embed",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            UseCaseFilter::All => UseCaseFilter::General,
+            UseCaseFilter::General => UseCaseFilter::Coding,
+            UseCaseFilter::Coding => UseCaseFilter::Reasoning,
+            UseCaseFilter::Reasoning => UseCaseFilter::Chat,
+            UseCaseFilter::Chat => UseCaseFilter::Multimodal,
+            UseCaseFilter::Multimodal => UseCaseFilter::Embedding,
+            UseCaseFilter::Embedding => UseCaseFilter::All,
+        }
+    }
+
+    pub fn matches(&self, use_case: UseCase) -> bool {
+        match self {
+            UseCaseFilter::All => true,
+            UseCaseFilter::General => use_case == UseCase::General,
+            UseCaseFilter::Coding => use_case == UseCase::Coding,
+            UseCaseFilter::Reasoning => use_case == UseCase::Reasoning,
+            UseCaseFilter::Chat => use_case == UseCase::Chat,
+            UseCaseFilter::Multimodal => use_case == UseCase::Multimodal,
+            UseCaseFilter::Embedding => use_case == UseCase::Embedding,
+        }
+    }
+}
+
+/// Filter by tensor parallelism compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TpFilter {
+    All,
+    Tp2,
+    Tp3,
+    Tp4,
+}
+
+impl TpFilter {
+    pub fn label(&self) -> &str {
+        match self {
+            TpFilter::All => "All",
+            TpFilter::Tp2 => "TP=2",
+            TpFilter::Tp3 => "TP=3",
+            TpFilter::Tp4 => "TP=4",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            TpFilter::All => TpFilter::Tp2,
+            TpFilter::Tp2 => TpFilter::Tp3,
+            TpFilter::Tp3 => TpFilter::Tp4,
+            TpFilter::Tp4 => TpFilter::All,
+        }
+    }
+
+    pub fn matches(&self, model: &llmfit_core::models::LlmModel) -> bool {
+        match self {
+            TpFilter::All => true,
+            TpFilter::Tp2 => model.supports_tp(2),
+            TpFilter::Tp3 => model.supports_tp(3),
+            TpFilter::Tp4 => model.supports_tp(4),
+        }
+    }
 }
 
 impl FitFilter {
@@ -66,6 +153,8 @@ pub struct App {
 
     // Filters
     pub fit_filter: FitFilter,
+    pub use_case_filter: UseCaseFilter,
+    pub tp_filter: TpFilter,
     pub installed_first: bool,
     pub sort_column: SortColumn,
 
@@ -160,6 +249,8 @@ impl App {
             providers: model_providers,
             selected_providers,
             fit_filter: FitFilter::All,
+            use_case_filter: UseCaseFilter::All,
+            tp_filter: TpFilter::All,
             installed_first: false,
             sort_column: SortColumn::Score,
             selected_row: 0,
@@ -225,7 +316,13 @@ impl App {
                     FitFilter::Runnable => fit.fit_level != FitLevel::TooTight,
                 };
 
-                matches_search && matches_provider && matches_fit
+                // Use case filter
+                let matches_use_case = self.use_case_filter.matches(fit.use_case);
+
+                // TP filter
+                let matches_tp = self.tp_filter.matches(&fit.model);
+
+                matches_search && matches_provider && matches_fit && matches_use_case && matches_tp
             })
             .map(|(i, _)| i)
             .collect();
@@ -288,6 +385,16 @@ impl App {
 
     pub fn cycle_fit_filter(&mut self) {
         self.fit_filter = self.fit_filter.next();
+        self.apply_filters();
+    }
+
+    pub fn cycle_use_case_filter(&mut self) {
+        self.use_case_filter = self.use_case_filter.next();
+        self.apply_filters();
+    }
+
+    pub fn cycle_tp_filter(&mut self) {
+        self.tp_filter = self.tp_filter.next();
         self.apply_filters();
     }
 

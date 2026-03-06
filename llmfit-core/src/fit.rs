@@ -7,6 +7,7 @@ use crate::models::{self, LlmModel, UseCase};
 pub enum InferenceRuntime {
     LlamaCpp, // llama.cpp / Ollama
     Mlx,      // Apple MLX framework
+    VLlm,     // vLLM (distributed tensor-parallel inference)
 }
 
 impl InferenceRuntime {
@@ -14,6 +15,7 @@ impl InferenceRuntime {
         match self {
             InferenceRuntime::LlamaCpp => "llama.cpp",
             InferenceRuntime::Mlx => "MLX",
+            InferenceRuntime::VLlm => "vLLM",
         }
     }
 }
@@ -26,6 +28,7 @@ pub enum SortColumn {
     MemPct,
     Ctx,
     ReleaseDate,
+    ReleaseYear,
     UseCase,
 }
 
@@ -37,6 +40,7 @@ impl SortColumn {
             SortColumn::MemPct => "Mem%",
             SortColumn::Ctx => "Ctx",
             SortColumn::ReleaseDate => "Date",
+            SortColumn::ReleaseYear => "Year",
             SortColumn::UseCase => "Use",
         }
     }
@@ -47,7 +51,8 @@ impl SortColumn {
             SortColumn::Params => SortColumn::MemPct,
             SortColumn::MemPct => SortColumn::Ctx,
             SortColumn::Ctx => SortColumn::ReleaseDate,
-            SortColumn::ReleaseDate => SortColumn::UseCase,
+            SortColumn::ReleaseDate => SortColumn::ReleaseYear,
+            SortColumn::ReleaseYear => SortColumn::UseCase,
             SortColumn::UseCase => SortColumn::Score,
         }
     }
@@ -67,10 +72,11 @@ pub enum FitLevel {
 /// This is the "optimization" dimension, independent of memory fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum RunMode {
-    Gpu,        // Fully loaded into VRAM -- fast
-    MoeOffload, // MoE: active experts in VRAM, inactive offloaded to RAM
-    CpuOffload, // Partial GPU offload, spills to system RAM -- mixed
-    CpuOnly,    // Entirely in system RAM, no GPU -- slow
+    Gpu,             // Fully loaded into VRAM -- fast
+    TensorParallel,  // Distributed across cluster nodes via NCCL -- fast
+    MoeOffload,      // MoE: active experts in VRAM, inactive offloaded to RAM
+    CpuOffload,      // Partial GPU offload, spills to system RAM -- mixed
+    CpuOnly,         // Entirely in system RAM, no GPU -- slow
 }
 
 /// Multi-dimensional score components (0-100 each).
@@ -116,7 +122,9 @@ impl ModelFit {
 
         // Determine inference runtime up front so path selection can use
         // the correct quantization hierarchy.
-        let runtime = if system.backend == GpuBackend::Metal && system.unified_memory {
+        let runtime = if system.cluster_mode {
+            InferenceRuntime::VLlm
+        } else if system.backend == GpuBackend::Metal && system.unified_memory {
             InferenceRuntime::Mlx
         } else {
             InferenceRuntime::LlamaCpp
@@ -125,7 +133,81 @@ impl ModelFit {
 
         // Step 1: pick the best available execution path
         // Step 2: score memory fit purely on headroom in that path's memory pool
-        let (run_mode, mem_required, mem_available) = if system.has_gpu {
+        let (run_mode, mem_required, mem_available) = if system.cluster_mode {
+            // Cluster mode: vLLM with tensor parallelism across multiple nodes.
+            let pool = system.total_gpu_vram_gb.unwrap_or(0.0);
+            let node_count = system.cluster_node_count;
+            let per_gpu = if node_count > 0 { pool / node_count as f64 } else { pool };
+
+            // Check TP compatibility: attention heads must be divisible by TP degree
+            let valid_tp = model.valid_tp_sizes();
+            let best_tp = valid_tp.iter().rev()
+                .find(|&&tp| tp <= node_count)
+                .copied()
+                .unwrap_or(1);
+
+            // Determine effective memory pool for the chosen TP
+            let effective_pool = per_gpu * best_tp as f64;
+
+            if let Some((_, best_mem)) = choose_quant(effective_pool) {
+                if best_tp == node_count {
+                    notes.push(format!(
+                        "Cluster: TP={} across all {} nodes via vLLM",
+                        best_tp, node_count
+                    ));
+                } else if best_tp > 1 {
+                    notes.push(format!(
+                        "Cluster: TP={} (of {} nodes) — heads not divisible by {}",
+                        best_tp, node_count, node_count
+                    ));
+                    let remaining = node_count - best_tp;
+                    notes.push(format!(
+                        "{} GPU(s) free for other models or PP fallback",
+                        remaining
+                    ));
+                } else {
+                    notes.push(format!(
+                        "Cluster: single GPU (TP=1) — heads not divisible by {} or {}",
+                        node_count, if node_count > 2 { node_count - 1 } else { 2 }
+                    ));
+                }
+
+                notes.push(format!(
+                    "Model on {} GPU(s) ({:.0} GB each, {:.0} GB effective)",
+                    best_tp, per_gpu, effective_pool
+                ));
+
+                // Show TP compatibility info
+                let tp_list: Vec<String> = valid_tp.iter()
+                    .filter(|&&tp| tp <= 8)
+                    .map(|tp| tp.to_string())
+                    .collect();
+                notes.push(format!("Valid TP sizes: {}", tp_list.join(", ")));
+
+                // If model doesn't support full cluster TP, suggest PP
+                if best_tp < node_count && best_mem > effective_pool * 0.8 {
+                    notes.push(format!(
+                        "Consider PP={} (pipeline parallel) to use all {} GPUs",
+                        node_count, node_count
+                    ));
+                }
+
+                (RunMode::TensorParallel, best_mem, effective_pool)
+            } else {
+                notes.push(format!(
+                    "Cluster: {} nodes ({:.0} GB total) — model too large",
+                    node_count, pool
+                ));
+                if best_tp < node_count {
+                    notes.push(format!(
+                        "TP={} max (heads not divisible by {}). Valid: {}",
+                        best_tp, node_count,
+                        valid_tp.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", ")
+                    ));
+                }
+                (RunMode::TensorParallel, default_mem_required, pool)
+            }
+        } else if system.has_gpu {
             if system.unified_memory {
                 // Apple Silicon: GPU and CPU share the same memory pool.
                 // No CpuOffload -- there's no separate pool to spill to.
@@ -330,6 +412,7 @@ impl ModelFit {
     pub fn run_mode_text(&self) -> &str {
         match self.run_mode {
             RunMode::Gpu => "GPU",
+            RunMode::TensorParallel => "TP",
             RunMode::MoeOffload => "MoE",
             RunMode::CpuOffload => "CPU+GPU",
             RunMode::CpuOnly => "CPU",
@@ -352,7 +435,7 @@ fn score_fit(
     }
 
     match run_mode {
-        RunMode::Gpu => {
+        RunMode::Gpu | RunMode::TensorParallel => {
             if recommended <= mem_available {
                 FitLevel::Perfect
             } else if mem_available >= mem_required * 1.2 {
@@ -602,6 +685,32 @@ pub fn rank_models_by_fit_opts_col(
                     }
                 }
             }
+            SortColumn::ReleaseYear => {
+                let a_year = a.model.release_date.as_deref()
+                    .and_then(|d| d.get(..4))
+                    .unwrap_or("");
+                let b_year = b.model.release_date.as_deref()
+                    .and_then(|d| d.get(..4))
+                    .unwrap_or("");
+                match (a_year.is_empty(), b_year.is_empty()) {
+                    (true, false) => std::cmp::Ordering::Greater,
+                    (false, true) => std::cmp::Ordering::Less,
+                    (true, true) => b
+                        .score
+                        .partial_cmp(&a.score)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                    (false, false) => {
+                        let cmp = b_year.cmp(a_year); // newest first
+                        if cmp == std::cmp::Ordering::Equal {
+                            b.score
+                                .partial_cmp(&a.score)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        } else {
+                            cmp
+                        }
+                    }
+                }
+            }
             SortColumn::UseCase => {
                 let cmp = a.use_case.label().cmp(b.use_case.label());
                 if cmp == std::cmp::Ordering::Equal {
@@ -635,12 +744,15 @@ fn estimate_tps(
     let k: f64 = match (system.backend, runtime) {
         (GpuBackend::Metal, InferenceRuntime::Mlx) => 250.0,
         (GpuBackend::Metal, InferenceRuntime::LlamaCpp) => 160.0,
+        // vLLM on CUDA cluster: slightly higher throughput due to continuous batching
+        (GpuBackend::Cuda, InferenceRuntime::VLlm) => 240.0,
         (GpuBackend::Cuda, _) => 220.0,
         (GpuBackend::Rocm, _) => 180.0,
         (GpuBackend::Vulkan, _) => 150.0,
         (GpuBackend::Sycl, _) => 100.0,
         (GpuBackend::CpuArm, _) => 90.0,
         (GpuBackend::CpuX86, _) => 70.0,
+        (_, InferenceRuntime::VLlm) => 200.0, // vLLM fallback
     };
 
     let params = model.params_b().max(0.1);
@@ -656,10 +768,11 @@ fn estimate_tps(
 
     // Run mode penalties
     match run_mode {
-        RunMode::Gpu => {}                  // full speed
-        RunMode::MoeOffload => base *= 0.8, // expert switching latency
-        RunMode::CpuOffload => base *= 0.5, // significant penalty
-        RunMode::CpuOnly => base *= 0.3,    // worst case—override K to CPU
+        RunMode::Gpu => {}                       // full speed
+        RunMode::TensorParallel => base *= 0.9,  // ~10% overhead for NCCL/QSFP
+        RunMode::MoeOffload => base *= 0.8,      // expert switching latency
+        RunMode::CpuOffload => base *= 0.5,      // significant penalty
+        RunMode::CpuOnly => base *= 0.3,         // worst case—override K to CPU
     }
 
     // CPU-only should use CPU K regardless of detected GPU
