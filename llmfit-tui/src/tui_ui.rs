@@ -64,6 +64,52 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_system_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
+    // Cluster mode: show cluster-specific system bar
+    if app.specs.cluster_mode {
+        let cluster_info = format!(
+            "{}× GB10 Blackwell ({:.0} GB total, CUDA/vLLM)",
+            app.specs.cluster_node_count,
+            app.specs.total_gpu_vram_gb.unwrap_or(0.0)
+        );
+
+        let text = Line::from(vec![
+            Span::styled(" CLUSTER ", Style::default().fg(tc.title).bg(tc.accent).bold()),
+            Span::styled("  ", Style::default()),
+            Span::styled("CPU: ", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!("{} cores", app.specs.total_cpu_cores),
+                Style::default().fg(tc.fg),
+            ),
+            Span::styled("  │  ", Style::default().fg(tc.muted)),
+            Span::styled("RAM: ", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!("{:.0} GB", app.specs.total_ram_gb),
+                Style::default().fg(tc.accent),
+            ),
+            Span::styled("  │  ", Style::default().fg(tc.muted)),
+            Span::styled(
+                format!("GPU: {}", cluster_info),
+                Style::default().fg(tc.accent_secondary),
+            ),
+            Span::styled("  │  ", Style::default().fg(tc.muted)),
+            Span::styled("Runtime: vLLM (TP)", Style::default().fg(tc.good)),
+        ]);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(tc.accent))
+            .title(format!(
+                " llmfit — {}-node DGX Spark Cluster ",
+                app.specs.cluster_node_count
+            ))
+            .title_style(Style::default().fg(tc.title).add_modifier(Modifier::BOLD));
+
+        let paragraph = Paragraph::new(text).block(block);
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    // Standard single-machine system bar
     let gpu_info = if app.specs.gpus.is_empty() {
         format!("GPU: none ({})", app.specs.backend.label())
     } else {
@@ -496,6 +542,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
 
             let mode_color = match fit.run_mode {
                 llmfit_core::fit::RunMode::Gpu => tc.mode_gpu,
+                llmfit_core::fit::RunMode::TensorParallel => tc.mode_gpu,
                 llmfit_core::fit::RunMode::MoeOffload => tc.mode_moe,
                 llmfit_core::fit::RunMode::CpuOffload => tc.mode_offload,
                 llmfit_core::fit::RunMode::CpuOnly => tc.mode_cpu,
