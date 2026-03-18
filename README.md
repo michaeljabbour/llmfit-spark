@@ -19,7 +19,7 @@
 
 A terminal tool that right-sizes LLM models to your system's RAM, CPU, and GPU. Detects your hardware, scores each model across quality, speed, fit, and context dimensions, and tells you which ones will actually run well on your machine.
 
-Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-GPU setups, MoE architectures, dynamic quantization selection, speed estimation, and local runtime providers (Ollama, llama.cpp, MLX, Docker Model Runner).
+Ships with an interactive TUI (default) and a classic CLI mode. Supports multi-GPU setups, MoE architectures, dynamic quantization selection, speed estimation, and local runtime providers (Ollama, llama.cpp, MLX, Docker Model Runner, LM Studio).
 
 > **Sister project:** Check out [sympozium](https://github.com/AlexsJones/sympozium/) for managing agents in Kubernetes.
 
@@ -425,7 +425,7 @@ src/
   hardware.rs     -- System RAM/CPU/GPU detection (multi-GPU, backend identification)
   models.rs       -- Model database, quantization hierarchy, dynamic quant selection
   fit.rs          -- Multi-dimensional scoring (Q/S/F/C), speed estimation, MoE offloading
-  providers.rs    -- Runtime provider integration (Ollama, llama.cpp, MLX, Docker Model Runner), install detection, pull/download
+  providers.rs    -- Runtime provider integration (Ollama, llama.cpp, MLX, Docker Model Runner, LM Studio), install detection, pull/download
   display.rs      -- Classic CLI table rendering + JSON output
   tui_app.rs      -- TUI application state, filters, navigation
   tui_ui.rs       -- TUI rendering (ratatui)
@@ -503,6 +503,7 @@ llmfit supports multiple local runtime providers:
 - **llama.cpp** (direct GGUF downloads from Hugging Face + local cache detection)
 - **MLX** (Apple Silicon / mlx-community model cache + optional server)
 - **Docker Model Runner** (Docker Desktop's built-in model serving)
+- **LM Studio** (local model server with REST API for model management + downloads)
 
 When more than one compatible provider is available for a model, pressing `d` in the TUI opens a provider picker modal.
 
@@ -581,6 +582,30 @@ To connect to Docker Model Runner on a different host or port, set the `DOCKER_M
 
 ```sh
 DOCKER_MODEL_RUNNER_HOST="http://192.168.1.100:12434" llmfit
+```
+
+### LM Studio integration
+
+llmfit integrates with [LM Studio](https://lmstudio.ai) as a local model server with built-in model download capabilities.
+
+Requirements:
+
+- LM Studio must be running with its local server enabled
+- Default endpoint: `http://127.0.0.1:1234`
+
+How it works:
+
+- llmfit queries `GET /v1/models` to list models available in LM Studio
+- pressing `d` in the TUI triggers a download via `POST /api/v1/models/download`
+- download progress is tracked by polling `GET /api/v1/models/download-status`
+- LM Studio accepts HuggingFace model names directly, so no name mapping is needed
+
+### Remote LM Studio instances
+
+To connect to LM Studio on a different host or port, set the `LMSTUDIO_HOST` environment variable:
+
+```sh
+LMSTUDIO_HOST="http://192.168.1.100:1234" llmfit
 ```
 
 ### Model name mapping
