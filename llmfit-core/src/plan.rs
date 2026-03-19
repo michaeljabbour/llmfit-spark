@@ -167,22 +167,21 @@ fn estimate_tps_with_gpu(
     let params = model.params_b().max(0.1);
 
     // Bandwidth-based estimation when GPU is recognized
-    if path != PlanRunPath::CpuOnly {
-        if let Some(name) = gpu_name {
-            if let Some(bw) = gpu_memory_bandwidth_gbps(name) {
-                let model_gb = params * quant_bytes_per_param(quant);
-                let efficiency = 0.55;
-                let raw_tps = (bw / model_gb) * efficiency;
+    if path != PlanRunPath::CpuOnly
+        && let Some(name) = gpu_name
+        && let Some(bw) = gpu_memory_bandwidth_gbps(name)
+    {
+        let model_gb = params * quant_bytes_per_param(quant);
+        let efficiency = 0.55;
+        let raw_tps = (bw / model_gb) * efficiency;
 
-                let mode_factor = match path {
-                    PlanRunPath::Gpu => 1.0,
-                    PlanRunPath::CpuOffload => 0.5,
-                    PlanRunPath::CpuOnly => unreachable!(),
-                };
+        let mode_factor = match path {
+            PlanRunPath::Gpu => 1.0,
+            PlanRunPath::CpuOffload => 0.5,
+            PlanRunPath::CpuOnly => unreachable!(),
+        };
 
-                return (raw_tps * mode_factor).max(0.1);
-            }
-        }
+        return (raw_tps * mode_factor).max(0.1);
     }
 
     // Fallback: fixed-constant approach

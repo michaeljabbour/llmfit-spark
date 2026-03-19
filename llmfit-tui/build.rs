@@ -60,7 +60,7 @@ fn generate_assets_from_dist(dist_dir: &Path, files: &[PathBuf]) -> String {
             .unwrap_or_else(|_| panic!("{} not under dist dir", file.display()));
         let route_path = format!("/{}", relative.to_string_lossy().replace('\\', "/"));
         let include_path = file.to_string_lossy();
-        let content_type = content_type_for_path(&file);
+        let content_type = content_type_for_path(file);
 
         output.push_str(&format!(
             "    EmbeddedAsset {{ path: {route_path:?}, content_type: {content_type:?}, bytes: include_bytes!({include_path:?}) }},\n"

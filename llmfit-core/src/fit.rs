@@ -606,15 +606,12 @@ pub fn backend_compatible(model: &LlmModel, system: &SystemSpecs) -> bool {
         // For CUDA GPUs, check that the GPU's compute capability meets the
         // minimum required by the quantization format (e.g. AWQ needs Turing+).
         // ROCm and unrecognized NVIDIA GPUs are assumed compatible.
-        if system.backend == GpuBackend::Cuda {
-            if let Some(min_cc) = crate::hardware::quant_min_compute_capability(&model.quantization)
-            {
-                if let Some(gpu_name) = &system.gpu_name {
-                    if let Some(gpu_cc) = crate::hardware::gpu_compute_capability(gpu_name) {
-                        return gpu_cc >= min_cc;
-                    }
-                }
-            }
+        if system.backend == GpuBackend::Cuda
+            && let Some(min_cc) = crate::hardware::quant_min_compute_capability(&model.quantization)
+            && let Some(gpu_name) = &system.gpu_name
+            && let Some(gpu_cc) = crate::hardware::gpu_compute_capability(gpu_name)
+        {
+            return gpu_cc >= min_cc;
         }
         true
     } else {
@@ -789,25 +786,25 @@ fn estimate_tps(
     let gpu_name = system.gpu_name.as_deref().unwrap_or("");
     let bandwidth = gpu_memory_bandwidth_gbps(gpu_name);
 
-    if run_mode != RunMode::CpuOnly {
-        if let Some(bw) = bandwidth {
-            let bytes_per_param = models::quant_bytes_per_param(quant);
-            let model_gb = params * bytes_per_param;
+    if run_mode != RunMode::CpuOnly
+        && let Some(bw) = bandwidth
+    {
+        let bytes_per_param = models::quant_bytes_per_param(quant);
+        let model_gb = params * bytes_per_param;
 
-            // Efficiency factor — captures overhead not in the simple
-            // bandwidth / model-size formula.
-            let efficiency = 0.55;
-            let raw_tps = (bw / model_gb) * efficiency;
+        // Efficiency factor — captures overhead not in the simple
+        // bandwidth / model-size formula.
+        let efficiency = 0.55;
+        let raw_tps = (bw / model_gb) * efficiency;
 
-            let mode_factor = match run_mode {
-                RunMode::Gpu => 1.0,
-                RunMode::MoeOffload => 0.8,
-                RunMode::CpuOffload => 0.5,
-                RunMode::CpuOnly => unreachable!(),
-            };
+        let mode_factor = match run_mode {
+            RunMode::Gpu => 1.0,
+            RunMode::MoeOffload => 0.8,
+            RunMode::CpuOffload => 0.5,
+            RunMode::CpuOnly => unreachable!(),
+        };
 
-            return (raw_tps * mode_factor).max(0.1);
-        }
+        return (raw_tps * mode_factor).max(0.1);
     }
 
     // ── Fallback: fixed-constant approach ──────────────────────────

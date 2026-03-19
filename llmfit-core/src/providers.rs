@@ -701,18 +701,17 @@ impl LlamaCppProvider {
             // dest may not exist yet, so canonicalize the parent
             dest_path
                 .parent()
-                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "no parent"))
+                .ok_or_else(|| std::io::Error::other("no parent"))
                 .and_then(|p| {
                     std::fs::create_dir_all(p)?;
                     p.canonicalize()
                 }),
-        ) {
-            if !canonical_dest.starts_with(&canonical_dir) {
-                return Err(format!(
-                    "Security: download path escapes cache directory: {}",
-                    dest_path.display()
-                ));
-            }
+        ) && !canonical_dest.starts_with(&canonical_dir)
+        {
+            return Err(format!(
+                "Security: download path escapes cache directory: {}",
+                dest_path.display()
+            ));
         }
 
         let tag = format!("{}/{}", repo_id, filename);
@@ -1100,10 +1099,10 @@ impl DockerModelRunnerProvider {
             let lower = e.id.to_lowercase();
             set.insert(lower.clone());
             // Also insert the model part after the namespace (e.g. "ai/llama3.1" → "llama3.1")
-            if let Some(name) = lower.split('/').next_back() {
-                if name != lower {
-                    set.insert(name.to_string());
-                }
+            if let Some(name) = lower.split('/').next_back()
+                && name != lower
+            {
+                set.insert(name.to_string());
             }
             // Strip quantization tag if present (e.g. "llama3.1:8B-Q4_K_M" → "llama3.1:8b")
             if let Some(base) = lower.split(':').next() {
@@ -1284,10 +1283,10 @@ impl LmStudioProvider {
             let lower = m.key.to_lowercase();
             set.insert(lower.clone());
             // Also insert the model part after the publisher (e.g. "lmstudio-community/Qwen3-1.7B-MLX-4bit" → "qwen3-1.7b-mlx-4bit")
-            if let Some(name) = lower.split('/').next_back() {
-                if name != lower {
-                    set.insert(name.to_string());
-                }
+            if let Some(name) = lower.split('/').next_back()
+                && name != lower
+            {
+                set.insert(name.to_string());
             }
         }
         (true, set, count)
@@ -1465,7 +1464,7 @@ impl ModelProvider for LmStudioProvider {
                                 }
 
                                 let _ = tx.send(PullEvent::Progress {
-                                    status: format!("Downloading via LM Studio..."),
+                                    status: "Downloading via LM Studio...".to_string(),
                                     percent,
                                 });
                             }
@@ -1892,12 +1891,12 @@ fn strip_trailing_quant_suffix(name: &str) -> String {
 
 fn normalize_mlx_repo_base(repo_lower: &str) -> String {
     let without_quant = strip_trailing_quant_suffix(repo_lower);
-    let without_mlx = without_quant
+
+    without_quant
         .strip_suffix("-mlx")
         .unwrap_or(&without_quant)
         .trim_matches('-')
-        .to_string();
-    without_mlx
+        .to_string()
 }
 
 fn strip_trailing_common_model_suffixes(name: &str) -> String {

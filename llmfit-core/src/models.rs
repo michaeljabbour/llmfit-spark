@@ -148,18 +148,14 @@ impl Capability {
 /// Model weight format — determines which inference runtime to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ModelFormat {
+    #[default]
     Gguf,
     Awq,
     Gptq,
     Mlx,
     Safetensors,
-}
-
-impl Default for ModelFormat {
-    fn default() -> Self {
-        ModelFormat::Gguf
-    }
 }
 
 impl ModelFormat {

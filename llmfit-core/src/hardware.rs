@@ -1123,26 +1123,24 @@ impl SystemSpecs {
                 continue;
             }
 
-            if let Some((key, value)) = trimmed.split_once('=') {
-                if key.trim().eq_ignore_ascii_case("deviceName") {
-                    let name = value.trim();
-                    if !name.is_empty() {
-                        names.push(name.to_string());
-                    }
-                    continue;
+            if let Some((key, value)) = trimmed.split_once('=')
+                && key.trim().eq_ignore_ascii_case("deviceName")
+            {
+                let name = value.trim();
+                if !name.is_empty() {
+                    names.push(name.to_string());
                 }
+                continue;
             }
 
-            if let Some(rest) = trimmed.strip_prefix("GPU id") {
-                if let Some(start) = rest.find('(') {
-                    if let Some(end) = rest.rfind(')') {
-                        if end > start + 1 {
-                            let name = rest[start + 1..end].trim();
-                            if !name.is_empty() {
-                                names.push(name.to_string());
-                            }
-                        }
-                    }
+            if let Some(rest) = trimmed.strip_prefix("GPU id")
+                && let Some(start) = rest.find('(')
+                && let Some(end) = rest.rfind(')')
+                && end > start + 1
+            {
+                let name = rest[start + 1..end].trim();
+                if !name.is_empty() {
+                    names.push(name.to_string());
                 }
             }
         }
@@ -1175,7 +1173,7 @@ impl SystemSpecs {
         let ids: Vec<String> = list_stdout
             .lines()
             .filter(|line| line.contains("NPU ID"))
-            .filter_map(|line| line.split(':').last())
+            .filter_map(|line| line.split(':').next_back())
             .map(|s| s.trim().to_string())
             .collect();
 
@@ -1199,8 +1197,8 @@ impl SystemSpecs {
                 let mem = s
                     .lines()
                     .find(|l| l.contains("HBM Capacity"))
-                    .and_then(|l| l.split(':').last())
-                    .and_then(|v| v.trim().split_whitespace().next())
+                    .and_then(|l| l.split(':').next_back())
+                    .and_then(|v| v.split_whitespace().next())
                     .and_then(|num| num.parse::<u64>().ok())
                     .unwrap_or(0);
 
@@ -1215,7 +1213,7 @@ impl SystemSpecs {
             }
         }
 
-        return npu_infos;
+        npu_infos
     }
 
     /// Fallback for available RAM when sysinfo returns 0.

@@ -674,7 +674,7 @@ fn ensure_dashboard_available(
     context_limit: Option<u32>,
 ) -> Option<DashboardGuard> {
     let (host, port) = dashboard_target_from_env();
-    let url = format!("http://{}:{}/", host, port);
+    let _url = format!("http://{}:{}/", host, port);
 
     if dashboard_reachable(&host, port) {
         return None;
@@ -1325,7 +1325,7 @@ fn run_hf_search(query: &str, limit: usize) {
         return;
     }
 
-    println!("{:<50} {}", "Repository", "Type");
+    println!("{:<50} Type", "Repository");
     println!("{}", "-".repeat(65));
     for (id, desc) in results.iter().take(limit) {
         println!("{:<50} {}", id, desc);

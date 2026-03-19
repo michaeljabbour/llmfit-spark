@@ -1716,7 +1716,7 @@ fn draw_detail(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
         }
         right_lines.push(Line::from(""));
         right_lines.push(Line::from(Span::styled(
-            format!("  llmfit download \\"),
+            "  llmfit download \\".to_string(),
             Style::default().fg(tc.muted),
         )));
         right_lines.push(Line::from(Span::styled(
