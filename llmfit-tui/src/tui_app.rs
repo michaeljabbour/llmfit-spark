@@ -64,11 +64,17 @@ pub enum BenchViewMode {
 pub enum BenchMsg {
     Progress(String),
     ModelStarted(String),
+    TestDone {
+        model: String,
+        role: String,
+        test_name: String,
+    },
     RoleDone {
         model: String,
         role: String,
         quality: f64,
         speed: f64,
+        tests_in_role: usize,
     },
     ModelDone(quality::ModelQualityResult),
     AllDone,
@@ -358,7 +364,12 @@ pub struct App {
     pub bench_running: bool,
     pub bench_progress: String,
     pub bench_scroll: usize,
+    pub bench_selected_row: usize,
+    pub bench_show_detail: bool,
     pub bench_view_mode: BenchViewMode,
+    pub bench_confirm_quit: bool,
+    pub bench_tests_done: usize,
+    pub bench_tests_total: usize,
     bench_rx: Option<mpsc::Receiver<BenchMsg>>,
 
     /// How many models we silently dropped because they can't run on this
@@ -577,7 +588,12 @@ impl App {
             bench_running: false,
             bench_progress: String::new(),
             bench_scroll: 0,
+            bench_selected_row: 0,
+            bench_show_detail: false,
             bench_view_mode: BenchViewMode::Results,
+            bench_confirm_quit: false,
+            bench_tests_done: 0,
+            bench_tests_total: 0,
             bench_rx: None,
             backend_hidden_count,
         };
@@ -1978,7 +1994,11 @@ impl App {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let mut installed: Vec<String> = self.ollama_installed.iter().cloned().collect();
+        let mut installed: Vec<String> = self
+            .ollama_installed
+            .iter()
+            .map(|m| m.strip_suffix(":latest").unwrap_or(m).to_string())
+            .collect();
         installed.sort();
         let cache = serde_json::json!({
             "models_hash": format!("{:?}", installed),
@@ -2005,7 +2025,11 @@ impl App {
         };
 
         // Check if installed models match
-        let mut installed: Vec<String> = self.ollama_installed.iter().cloned().collect();
+        let mut installed: Vec<String> = self
+            .ollama_installed
+            .iter()
+            .map(|m| m.strip_suffix(":latest").unwrap_or(m).to_string())
+            .collect();
         installed.sort();
         let current_hash = format!("{:?}", installed);
         let cached_hash = cache
@@ -2081,20 +2105,33 @@ impl App {
 
     fn start_bench(&mut self) {
         self.bench_running = true;
+        self.bench_confirm_quit = false;
         self.bench_progress = "Starting benchmarks...".to_string();
         self.bench_results.clear();
         self.bench_routing.clear();
         self.bench_runner_ups.clear();
+        self.bench_tests_done = 0;
 
         let (tx, rx) = mpsc::channel();
         self.bench_rx = Some(rx);
 
         let ollama_url =
             std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string());
-        let mut models: Vec<String> = self.ollama_installed.iter().cloned().collect();
-        models.sort(); // Deterministic order
+        // Deduplicate: strip ":latest" suffix and remove dupes
+        let mut seen = std::collections::HashSet::new();
+        let mut models: Vec<String> = self
+            .ollama_installed
+            .iter()
+            .map(|m| m.strip_suffix(":latest").unwrap_or(m).to_string())
+            .filter(|m| seen.insert(m.clone()))
+            .collect();
+        models.sort();
         let config = quality::default_quality_config();
         let roles_total = config.roles.len();
+
+        // Compute total number of tests across all models
+        let tests_per_model: usize = config.roles.values().map(|r| r.tests.len()).sum();
+        self.bench_tests_total = tests_per_model * models.len();
 
         // Build status list
         self.bench_model_status = models
@@ -2116,6 +2153,7 @@ impl App {
 
                 // Run tests role by role so we can send per-role progress
                 let mut all_roles = Vec::new();
+                let mut all_test_results = Vec::new();
                 for (role_name, role_def) in &config.roles {
                     let url = format!("{}/api/generate", ollama_url.trim_end_matches('/'));
                     let mut role_results = Vec::new();
@@ -2123,50 +2161,74 @@ impl App {
                     for test_def in &role_def.tests {
                         let max_tok = test_def.max_tokens.unwrap_or(1024);
                         let temp = test_def.temperature.unwrap_or(0.3);
-                        if let Ok(resp) = quality::quality_ollama_generate(
+                        let result = match quality::quality_ollama_generate(
                             &url,
                             model,
                             &test_def.prompt,
                             max_tok,
                             temp,
                         ) {
-                            let q = quality::evaluate_response(&resp.text, &test_def.rules);
-                            let sw = test_def.speed_weight.unwrap_or(1.0);
-                            let sn = (resp.tok_per_sec / 3.0).min(10.0);
-                            let comp = (q * 2.0 + sn * sw) / (2.0 + sw);
-                            role_results.push(quality::QualityResult {
+                            Ok(resp) => {
+                                let q = quality::evaluate_response(&resp.text, &test_def.rules);
+                                let sw = test_def.speed_weight.unwrap_or(1.0);
+                                let sn = (resp.tok_per_sec / 3.0).min(10.0);
+                                let comp = (q * 2.0 + sn * sw) / (2.0 + sw);
+                                quality::QualityResult {
+                                    test_name: test_def.name.clone(),
+                                    role: role_name.clone(),
+                                    quality: q,
+                                    tok_per_sec: resp.tok_per_sec,
+                                    eval_tokens: resp.eval_count,
+                                    wall_time_sec: resp.wall_time_sec,
+                                    ttft_ms: resp.ttft_ms,
+                                    composite: comp,
+                                    response_preview: resp.text.chars().take(150).collect(),
+                                    error: None,
+                                }
+                            }
+                            Err(e) => quality::QualityResult {
                                 test_name: test_def.name.clone(),
                                 role: role_name.clone(),
-                                quality: q,
-                                tok_per_sec: resp.tok_per_sec,
-                                eval_tokens: resp.eval_count,
-                                wall_time_sec: resp.wall_time_sec,
-                                ttft_ms: resp.ttft_ms,
-                                composite: comp,
-                                response_preview: resp.text.chars().take(100).collect(),
-                                error: None,
-                            });
-                        }
+                                quality: 0.0,
+                                tok_per_sec: 0.0,
+                                eval_tokens: 0,
+                                wall_time_sec: 0.0,
+                                ttft_ms: None,
+                                composite: 0.0,
+                                response_preview: String::new(),
+                                error: Some(e),
+                            },
+                        };
+                        let _ = tx.send(BenchMsg::TestDone {
+                            model: model.clone(),
+                            role: role_name.clone(),
+                            test_name: test_def.name.clone(),
+                        });
+                        role_results.push(result);
                     }
 
                     let n = role_results.len().max(1) as f64;
                     let avg_q = role_results.iter().map(|r| r.quality).sum::<f64>() / n;
                     let avg_s = role_results.iter().map(|r| r.tok_per_sec).sum::<f64>() / n;
                     let avg_c = role_results.iter().map(|r| r.composite).sum::<f64>() / n;
+                    let tests_in_role = role_results.len();
 
                     let _ = tx.send(BenchMsg::RoleDone {
                         model: model.clone(),
                         role: role_name.clone(),
                         quality: avg_q,
                         speed: avg_s,
+                        tests_in_role,
                     });
+
+                    all_test_results.extend(role_results);
 
                     all_roles.push(quality::RoleScore {
                         role: role_name.clone(),
                         quality: (avg_q * 10.0).round() / 10.0,
                         speed: (avg_s * 10.0).round() / 10.0,
                         composite: (avg_c * 10.0).round() / 10.0,
-                        test_count: role_results.len(),
+                        test_count: tests_in_role,
                     });
                 }
 
@@ -2181,7 +2243,7 @@ impl App {
                     model: model.clone(),
                     provider: "ollama".to_string(),
                     roles: all_roles,
-                    test_results: Vec::new(),
+                    test_results: all_test_results,
                     overall_quality: (overall_q * 10.0).round() / 10.0,
                     overall_speed: (overall_s * 10.0).round() / 10.0,
                     overall_composite: (overall_c * 10.0).round() / 10.0,
@@ -2192,6 +2254,10 @@ impl App {
     }
 
     pub fn tick_bench(&mut self) {
+        // Always increment tick_count during bench so spinner animates
+        if self.show_bench {
+            self.tick_count = self.tick_count.wrapping_add(1);
+        }
         if let Some(rx) = &self.bench_rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
@@ -2204,11 +2270,23 @@ impl App {
                             ms.state = BenchModelState::Running;
                         }
                     }
+                    BenchMsg::TestDone {
+                        model: _,
+                        role,
+                        test_name,
+                    } => {
+                        self.bench_tests_done += 1;
+                        self.bench_progress = format!(
+                            "{}/{} tests [{} > {}]",
+                            self.bench_tests_done, self.bench_tests_total, role, test_name
+                        );
+                    }
                     BenchMsg::RoleDone {
                         model,
                         role,
                         quality,
                         speed,
+                        tests_in_role: _,
                     } => {
                         if let Some(ms) =
                             self.bench_model_status.iter_mut().find(|m| m.name == model)
