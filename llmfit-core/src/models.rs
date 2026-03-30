@@ -455,6 +455,78 @@ impl Default for ModelDatabase {
     }
 }
 
+/// Deduplicate a list of [`HfModelEntry`] records by name, merging duplicates.
+///
+/// When two entries share the same name the "larger" metadata wins (higher
+/// parameter count, RAM, VRAM, context length).  MoE flags, experts,
+/// capabilities, and GGUF sources are merged additively.
+fn dedupe_hf_entries(entries: Vec<HfModelEntry>) -> Vec<HfModelEntry> {
+    use std::collections::HashMap;
+    let mut map: HashMap<String, HfModelEntry> = HashMap::new();
+    for entry in entries {
+        map.entry(entry.name.clone())
+            .and_modify(|existing| {
+                // Keep the larger parameter metadata
+                if entry.parameters_raw.unwrap_or(0) > existing.parameters_raw.unwrap_or(0) {
+                    existing.parameter_count = entry.parameter_count.clone();
+                    existing.parameters_raw = entry.parameters_raw;
+                }
+                if entry.min_ram_gb > existing.min_ram_gb {
+                    existing.min_ram_gb = entry.min_ram_gb;
+                }
+                if entry.recommended_ram_gb > existing.recommended_ram_gb {
+                    existing.recommended_ram_gb = entry.recommended_ram_gb;
+                }
+                if entry.min_vram_gb.unwrap_or(0.0) > existing.min_vram_gb.unwrap_or(0.0) {
+                    existing.min_vram_gb = entry.min_vram_gb;
+                }
+                if entry.context_length > existing.context_length {
+                    existing.context_length = entry.context_length;
+                }
+                // Merge MoE info
+                if entry.is_moe {
+                    existing.is_moe = true;
+                }
+                if entry.num_experts.is_some() {
+                    existing.num_experts = entry.num_experts;
+                }
+                if entry.active_experts.is_some() {
+                    existing.active_experts = entry.active_experts;
+                }
+                if entry.active_parameters.is_some() {
+                    existing.active_parameters = entry.active_parameters;
+                }
+                // Prefer later release date
+                if entry.release_date > existing.release_date {
+                    existing.release_date = entry.release_date.clone();
+                }
+                // Merge capabilities (deduplicated)
+                for cap in &entry.capabilities {
+                    if !existing.capabilities.contains(cap) {
+                        existing.capabilities.push(cap.clone());
+                    }
+                }
+                // Merge gguf_sources (deduplicated by repo)
+                for src in &entry.gguf_sources {
+                    if !existing.gguf_sources.iter().any(|s| s.repo == src.repo) {
+                        existing.gguf_sources.push(src.clone());
+                    }
+                }
+                // Prefer non-default format
+                if existing.format == ModelFormat::default()
+                    && entry.format != ModelFormat::default()
+                {
+                    existing.format = entry.format.clone();
+                }
+                // Keep higher download/like counts
+                existing.hf_downloads = existing.hf_downloads.max(entry.hf_downloads);
+                existing.hf_likes = existing.hf_likes.max(entry.hf_likes);
+            })
+            .or_insert(entry);
+    }
+    map.into_values().collect()
+}
+
 /// Normalize a model name/ID to a canonical slug for deduplication.
 ///
 /// Strips the `org/` prefix, lowercases, and collapses `-`/`_`/`.` so that
