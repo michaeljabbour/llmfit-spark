@@ -10,6 +10,8 @@ use llmfit_core::providers::{
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 
+use ratatui::widgets::TableState;
+
 use crate::download_history::{DownloadHistory, DownloadRecord, DownloadResult};
 use crate::filter_config::FilterConfig;
 use crate::theme::Theme;
@@ -415,6 +417,7 @@ pub struct App {
 
     // Table state
     pub selected_row: usize,
+    pub table_state: TableState,
 
     // Detail view
     pub show_detail: bool,
@@ -825,6 +828,7 @@ impl App {
             sort_column,
             sort_ascending,
             selected_row: 0,
+            table_state: TableState::default(),
             show_detail: false,
             show_compare: false,
             compare_mark_model: None,
@@ -3167,9 +3171,7 @@ impl App {
     pub fn tick_pull(&mut self) {
         self.enqueue_capability_probes_for_visible(24);
         self.tick_download_capability();
-        if self.pull_active.is_some() {
-            self.tick_count = self.tick_count.wrapping_add(1);
-        }
+        self.tick_count = self.tick_count.wrapping_add(1);
         let Some(handle) = &self.pull_active else {
             return;
         };
